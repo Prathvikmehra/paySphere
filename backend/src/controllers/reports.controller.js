@@ -13,96 +13,125 @@ exports.getAnalytics = async (req, res, next) => {
     const now = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
 
-    // Fetch all payroll records within the date range
-    const payrolls = await PayrollUpdate.find({
-      createdBy: userId,
-      $or: [
-        { year: { $gt: startDate.getFullYear() } },
-        {
-          year: startDate.getFullYear(),
-          month: { $gte: startDate.getMonth() + 1 },
+    // MongoDB Aggregation Pipeline for Monthly Trends
+    const monthlyTrendsAgg = await PayrollUpdate.aggregate([
+      {
+        $match: {
+          createdBy: new require("mongoose").Types.ObjectId(userId),
+          $or: [
+            { year: { $gt: startDate.getFullYear() } },
+            {
+              year: startDate.getFullYear(),
+              month: { $gte: startDate.getMonth() + 1 },
+            },
+          ],
         },
-      ],
-    }).sort({ year: 1, month: 1 });
+      },
+      {
+        $group: {
+          _id: { year: "$year", month: "$month" },
+          totalPayout: { $sum: "$netSalary" },
+          totalBase: { $sum: "$baseSalary" },
+          totalOvertime: { $sum: "$overtimePay" },
+          totalBonus: { $sum: "$bonus" },
+          totalDeductions: { $sum: { $add: ["$deductions", "$leaveDeduction"] } },
+          employeeCount: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { "_id.year": 1, "_id.month": 1 },
+      },
+    ]);
 
-    // Fetch all employees for role breakdown
-    const employees = await Employee.find({ createdBy: userId });
-    const employeeMap = {};
-    employees.forEach((emp) => {
-      employeeMap[String(emp._id)] = emp;
-    });
+    const monthlyTrends = monthlyTrendsAgg.map((item) => ({
+      month: item._id.month,
+      year: item._id.year,
+      label: `${item._id.year}-${String(item._id.month).padStart(2, "0")}`,
+      totalPayout: item.totalPayout,
+      totalBase: item.totalBase,
+      totalOvertime: item.totalOvertime,
+      totalBonus: item.totalBonus,
+      totalDeductions: item.totalDeductions,
+      employeeCount: item.employeeCount,
+    }));
 
-    // --- Monthly Payout Trends ---
-    const monthlyMap = {};
-    payrolls.forEach((p) => {
-      const key = `${p.year}-${String(p.month).padStart(2, "0")}`;
-      if (!monthlyMap[key]) {
-        monthlyMap[key] = {
-          month: p.month,
-          year: p.year,
-          label: key,
-          totalPayout: 0,
-          totalBase: 0,
-          totalOvertime: 0,
-          totalBonus: 0,
-          totalDeductions: 0,
-          employeeCount: 0,
-        };
-      }
-      monthlyMap[key].totalPayout += p.netSalary;
-      monthlyMap[key].totalBase += p.baseSalary;
-      monthlyMap[key].totalOvertime += p.overtimePay;
-      monthlyMap[key].totalBonus += p.bonus;
-      monthlyMap[key].totalDeductions += p.deductions + p.leaveDeduction;
-      monthlyMap[key].employeeCount++;
-    });
+    // Aggregation Pipeline for Role Breakdown
+    const roleBreakdownAgg = await PayrollUpdate.aggregate([
+      {
+        $match: {
+          createdBy: new require("mongoose").Types.ObjectId(userId),
+        },
+      },
+      {
+        $lookup: {
+          from: "employees",
+          localField: "employeeId",
+          foreignField: "_id",
+          as: "employeeInfo",
+        },
+      },
+      {
+        $unwind: { path: "$employeeInfo", preserveNullAndEmptyArrays: true },
+      },
+      {
+        $group: {
+          _id: { $ifNull: ["$employeeInfo.role", "Unassigned"] },
+          totalPayout: { $sum: "$netSalary" },
+          totalBase: { $sum: "$baseSalary" },
+          totalOvertime: { $sum: "$overtimePay" },
+          employeeCount: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { totalPayout: -1 },
+      },
+    ]);
 
-    const monthlyTrends = Object.values(monthlyMap).sort(
-      (a, b) => a.year - b.year || a.month - b.month,
-    );
+    const roleBreakdown = roleBreakdownAgg.map((item) => ({
+      role: item._id,
+      totalPayout: item.totalPayout,
+      totalBase: item.totalBase,
+      totalOvertime: item.totalOvertime,
+      employeeCount: item.employeeCount,
+    }));
 
-    // --- Role / Department Breakdown ---
-    const roleMap = {};
-    payrolls.forEach((p) => {
-      const emp = employeeMap[String(p.employeeId)];
-      const role = emp?.role || "Unassigned";
-      if (!roleMap[role]) {
-        roleMap[role] = {
-          role,
-          totalPayout: 0,
-          totalBase: 0,
-          totalOvertime: 0,
-          employeeCount: 0,
-        };
-      }
-      roleMap[role].totalPayout += p.netSalary;
-      roleMap[role].totalBase += p.baseSalary;
-      roleMap[role].totalOvertime += p.overtimePay;
-      roleMap[role].employeeCount++;
-    });
+    // Overall Summary
+    const summaryAgg = await PayrollUpdate.aggregate([
+      {
+        $match: {
+          createdBy: new require("mongoose").Types.ObjectId(userId),
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalPayout: { $sum: "$netSalary" },
+          totalBase: { $sum: "$baseSalary" },
+          totalOvertime: { $sum: "$overtimePay" },
+          totalBonus: { $sum: "$bonus" },
+          totalDeductions: { $sum: { $add: ["$deductions", "$leaveDeduction"] } },
+          totalRecords: { $sum: 1 },
+        },
+      },
+    ]);
 
-    const roleBreakdown = Object.values(roleMap).sort(
-      (a, b) => b.totalPayout - a.totalPayout,
-    );
-
-    // --- Overtime vs Base Summary ---
-    const totalBase = payrolls.reduce((sum, p) => sum + p.baseSalary, 0);
-    const totalOvertime = payrolls.reduce((sum, p) => sum + p.overtimePay, 0);
-    const totalBonus = payrolls.reduce((sum, p) => sum + p.bonus, 0);
-    const totalDeductions = payrolls.reduce(
-      (sum, p) => sum + p.deductions + p.leaveDeduction,
-      0,
-    );
-    const totalNet = payrolls.reduce((sum, p) => sum + p.netSalary, 0);
+    const overallSummary = summaryAgg[0] || {
+      totalPayout: 0,
+      totalBase: 0,
+      totalOvertime: 0,
+      totalBonus: 0,
+      totalDeductions: 0,
+      totalRecords: 0,
+    };
 
     res.status(200).json({
       summary: {
-        totalPayout: totalNet,
-        totalBase,
-        totalOvertime,
-        totalBonus,
-        totalDeductions,
-        totalRecords: payrolls.length,
+        totalPayout: overallSummary.totalPayout,
+        totalBase: overallSummary.totalBase,
+        totalOvertime: overallSummary.totalOvertime,
+        totalBonus: overallSummary.totalBonus,
+        totalDeductions: overallSummary.totalDeductions,
+        totalRecords: overallSummary.totalRecords,
         monthsCovered: monthlyTrends.length,
       },
       monthlyTrends,
@@ -160,50 +189,6 @@ exports.downloadPDFReport = async (req, res, next) => {
     ];
     const monthName = monthNames[month - 1];
 
-    // Create PDF document
-    const doc = new PDFDocument({
-      size: "A4",
-      margin: 40,
-      bufferPages: true,
-    });
-
-    // Set response headers for PDF download
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=payroll-report-${monthName}-${year}.pdf`,
-    );
-
-    // Pipe the PDF to the response
-    doc.pipe(res);
-
-    // --- Company Header ---
-    doc
-      .fontSize(22)
-      .font("Helvetica-Bold")
-      .fillColor("#1e3a5f")
-      .text(companyName, { align: "center" });
-
-    doc
-      .fontSize(12)
-      .font("Helvetica")
-      .fillColor("#666666")
-      .text(`Payroll Summary Report — ${monthName} ${year}`, {
-        align: "center",
-      });
-
-    doc.moveDown(0.5);
-
-    // Divider line
-    doc
-      .moveTo(40, doc.y)
-      .lineTo(555, doc.y)
-      .strokeColor("#cccccc")
-      .lineWidth(1)
-      .stroke();
-
-    doc.moveDown(1);
-
     // --- Summary Section ---
     const totalPayout = payrolls.reduce((sum, p) => sum + p.netSalary, 0);
     const totalBase = payrolls.reduce((sum, p) => sum + p.baseSalary, 0);
@@ -214,151 +199,46 @@ exports.downloadPDFReport = async (req, res, next) => {
       0,
     );
 
-    doc
-      .fontSize(14)
-      .font("Helvetica-Bold")
-      .fillColor("#333333")
-      .text("Financial Summary");
+    const { Worker } = require("worker_threads");
+    const path = require("path");
 
-    doc.moveDown(0.3);
-
-    const summaryData = [
-      ["Total Employees", String(payrolls.length)],
-      ["Total Base Salary", `₹${totalBase.toLocaleString("en-IN")}`],
-      ["Total Overtime Pay", `₹${totalOvertime.toLocaleString("en-IN")}`],
-      ["Total Bonuses", `₹${totalBonus.toLocaleString("en-IN")}`],
-      ["Total Deductions", `₹${totalDeductions.toLocaleString("en-IN")}`],
-      ["Net Payout", `₹${totalPayout.toLocaleString("en-IN")}`],
-    ];
-
-    summaryData.forEach(([label, value]) => {
-      doc
-        .fontSize(10)
-        .font("Helvetica")
-        .fillColor("#555555")
-        .text(label, 60, doc.y, { continued: true, width: 200 });
-      doc
-        .font("Helvetica-Bold")
-        .fillColor("#1e3a5f")
-        .text(`  ${value}`, { align: "right" });
-      doc.moveDown(0.2);
-    });
-
-    doc.moveDown(1);
-
-    // --- Employee Payroll Table ---
-    doc
-      .fontSize(14)
-      .font("Helvetica-Bold")
-      .fillColor("#333333")
-      .text("Employee Payroll Details");
-
-    doc.moveDown(0.5);
-
-    // Table header
-    const tableTop = doc.y;
-    const colWidths = [110, 65, 55, 60, 55, 55, 65];
-    const colLabels = [
-      "Employee",
-      "Base",
-      "Leave",
-      "Overtime",
-      "Bonus",
-      "Deduct",
-      "Net Pay",
-    ];
-    const startX = 40;
-
-    // Header background
-    doc
-      .rect(startX, tableTop - 4, 515, 18)
-      .fill("#e8edf3");
-
-    let xPos = startX + 5;
-    colLabels.forEach((label, i) => {
-      doc
-        .fontSize(8)
-        .font("Helvetica-Bold")
-        .fillColor("#333333")
-        .text(label, xPos, tableTop, { width: colWidths[i] });
-      xPos += colWidths[i];
-    });
-
-    doc.y = tableTop + 18;
-
-    // Table rows
-    payrolls.forEach((p, idx) => {
-      if (doc.y > 750) {
-        doc.addPage();
+    const pdfWorker = new Worker(path.join(__dirname, "../workers/pdf.worker.js"));
+    
+    pdfWorker.postMessage({
+      type: "GENERATE_COMPANY_REPORT",
+      payload: {
+        payrolls,
+        employeeMap,
+        companyName,
+        monthName,
+        year,
+        totalBase,
+        totalOvertime,
+        totalBonus,
+        totalDeductions,
+        totalPayout
       }
-
-      const rowY = doc.y;
-      const emp = employeeMap[String(p.employeeId)];
-      const role = emp?.role ? ` (${emp.role})` : "";
-
-      // Alternating row background
-      if (idx % 2 === 0) {
-        doc.rect(startX, rowY - 2, 515, 14).fill("#f9fafb");
-      }
-
-      const rowData = [
-        `${p.employeeName}${role}`,
-        `₹${p.baseSalary.toLocaleString("en-IN")}`,
-        String(p.leaveDays),
-        `₹${p.overtimePay.toLocaleString("en-IN")}`,
-        `₹${p.bonus.toLocaleString("en-IN")}`,
-        `₹${(p.deductions + p.leaveDeduction).toLocaleString("en-IN")}`,
-        `₹${p.netSalary.toLocaleString("en-IN")}`,
-      ];
-
-      xPos = startX + 5;
-      rowData.forEach((cell, i) => {
-        doc
-          .fontSize(8)
-          .font(i === 0 ? "Helvetica" : "Helvetica")
-          .fillColor("#444444")
-          .text(cell, xPos, rowY, { width: colWidths[i] });
-        xPos += colWidths[i];
-      });
-
-      doc.y = rowY + 14;
     });
 
-    // Table footer / totals
-    doc.moveDown(0.5);
-    doc
-      .moveTo(startX, doc.y)
-      .lineTo(startX + 515, doc.y)
-      .strokeColor("#cccccc")
-      .lineWidth(0.5)
-      .stroke();
-
-    doc.moveDown(0.3);
-    doc
-      .fontSize(9)
-      .font("Helvetica-Bold")
-      .fillColor("#1e3a5f")
-      .text(`Total Payout: ₹${totalPayout.toLocaleString("en-IN")}`, startX, doc.y, {
-        align: "right",
-      });
-
-    // --- Footer ---
-    const pageCount = doc.bufferedPageRange().count;
-    for (let i = 0; i < pageCount; i++) {
-      doc.switchToPage(i);
-      doc
-        .fontSize(8)
-        .font("Helvetica")
-        .fillColor("#aaaaaa")
-        .text(
-          `Generated by PaySphere • Page ${i + 1} of ${pageCount}`,
-          40,
-          doc.page.height - 30,
-          { align: "center", width: 515 },
+    pdfWorker.on("message", (result) => {
+      if (result.success) {
+        // Set response headers for PDF download
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename=payroll-report-${monthName}-${year}.pdf`,
         );
-    }
+        res.send(Buffer.from(result.pdfData));
+      } else {
+        next(new Error("Failed to generate PDF: " + result.error));
+      }
+      pdfWorker.terminate();
+    });
 
-    doc.end();
+    pdfWorker.on("error", (err) => {
+      next(err);
+      pdfWorker.terminate();
+    });
   } catch (error) {
     next(error);
   }

@@ -408,13 +408,14 @@ const EditEmployeeModal = ({ employee, onClose, onSave }) => {
     role: employee?.role || '',
     monthlySalary: employee?.monthlySalary || '',
     overtimeRate: employee?.overtimeRate || '',
+    isActive: employee?.isActive ?? true,
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    const { name, value, type, checked } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
   };
 
   const handleSubmit = async (e) => {
@@ -439,6 +440,7 @@ const EditEmployeeModal = ({ employee, onClose, onSave }) => {
         role: formData.role,
         monthlySalary: salary,
         overtimeRate: otRate,
+        isActive: formData.isActive,
       });
     } catch (err) {
       setError('Failed to update employee details.');

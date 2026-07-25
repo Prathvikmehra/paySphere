@@ -218,12 +218,22 @@ exports.importEmployees = async (req, res, next) => {
           });
 
           if (employees.length > 0) {
-            await Employee.insertMany(employees);
+            try {
+              await Employee.insertMany(employees, { ordered: false });
+            } catch (insertError) {
+              if (insertError.code === 11000) {
+                // Some documents were duplicates due to a race condition (TOCTOU)
+                skipped += insertError.writeErrors ? insertError.writeErrors.length : 1;
+                // We'll let it pass since ordered: false successfully inserts the non-duplicates
+              } else {
+                throw insertError;
+              }
+            }
           }
 
           return res.status(200).json({
             message: "Employee import completed",
-            imported: employees.length,
+            imported: employees.length - (skipped - (records.length - employees.length)), // approximate imported count
             skipped,
             errors,
           });

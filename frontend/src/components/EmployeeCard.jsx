@@ -62,8 +62,20 @@ const StatusBadge = ({ finalized }) => (
   </span>
 );
 
+const ActiveStatusBadge = ({ isActive }) => (
+  <span
+    className={`text-xs font-bold px-2 py-1 rounded-md border ${
+      isActive
+        ? 'bg-green-50 dark:bg-green-950/20 text-green-600 dark:text-green-400 border-green-200 dark:border-green-900/50'
+        : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border-gray-200 dark:border-slate-700'
+    }`}
+  >
+    {isActive ? 'Active' : 'Inactive'}
+  </span>
+);
+
 // <-- Added onEdit prop and Edit Button next to StatusBadge
-const CardHeader = ({ emp, finalized, onEdit }) => (
+const CardHeader = ({ emp, finalized, onEdit, onToggleStatus }) => (
   <div className="flex justify-between items-center">
     <div className="flex items-center gap-3">
       <div
@@ -82,7 +94,19 @@ const CardHeader = ({ emp, finalized, onEdit }) => (
       </div>
     </div>
     <div className="flex items-center gap-2">
+      <ActiveStatusBadge isActive={emp.isActive ?? true} />
       <StatusBadge finalized={finalized} />
+      {onToggleStatus && (
+        <button
+          onClick={onToggleStatus}
+          className="pt-2 px-2 text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 bg-gray-50 hover:bg-orange-50 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-md transition-colors"
+          title={emp.isActive ?? true ? "Mark as Inactive" : "Mark as Active"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mb-2" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 2a8 8 0 100 16 8 8 0 000-16zM8 7a2 2 0 114 0 2 2 0 01-4 0z" />
+          </svg>
+        </button>
+      )}
       {onEdit && (
         <button
           onClick={onEdit}
@@ -103,6 +127,7 @@ export default function EmployeeCard({
   onAddUpdate,
   onDeleteEmployee,
   onEdit, // <-- Added
+  onToggleStatus, // <-- New prop
 }) {
   const p = payroll;
 
